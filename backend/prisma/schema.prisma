@@ -2,3 +2,31 @@ datasource db {
   provider = "cockroachdb"
   url      = env("DATABASE_URL")
 }
+
+model User {
+  id         String    @id @default(uuid())
+  name       String    @unique
+  is_waiting Boolean   @default(false)
+  Player1    Matches[] @relation("player1")
+  Player2    Matches[] @relation("player2")
+}
+
+model Games {
+  id    Int    @id @default(sequence())
+  name  String @unique
+  time  Int //duration of the game in minutes
+  rules String
+}
+
+model Matches {
+  id          String   @id @default(uuid())
+  player_1_id String
+  Player_1    User     @relation("player1", fields: [player_1_id], references: [id])
+  player_2_id String
+  Player_2    User     @relation("player2", fields: [player_2_id], references: [id])
+  time        DateTime
+  winner      String?
+  is_active   Boolean  @default(true)
+
+  @@index([player_1_id, player_2_id])
+}
