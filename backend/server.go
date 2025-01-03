@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"math/rand"
 	"net/http"
 	"time"
@@ -12,13 +13,17 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-var MMQueue = make(chan string, 1)
+var MMQueue = make(chan UserInfo, 1)
 var isDone = make(chan *db.MatchesModel)
+
+type UserInfo struct {
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
+}
 
 func matchMaking(c echo.Context) error {
 	websocket.Handler(func(ws *websocket.Conn) {
 		defer ws.Close()
-
 		// Greet the client
 		if err := websocket.Message.Send(ws, "Hello, Client!"); err != nil {
 			c.Logger().Error("Error sending greeting:", err)
@@ -26,39 +31,48 @@ func matchMaking(c echo.Context) error {
 		}
 
 		// Receive user info
-		player1ID := ""
-		err := websocket.Message.Receive(ws, &player1ID)
+		player1 := new(UserInfo)
+		err := websocket.JSON.Receive(ws, player1)
 		if err != nil {
-			c.Logger().Error(err)
+			log.Println("Error receiving user info:", err)
 		}
+		log.Println("player1", player1)
 
 		select {
-		case player2ID := <-MMQueue:
+		case player2 := <-MMQueue:
 			games, err := client.Games.FindMany().Exec(context.Background())
 			if err != nil || len(games) == 0 {
+				log.Println("Error fetching games:", err)
 				websocket.Message.Send(ws, `{"error": "No games available"}`)
 				return
 			}
 			randGame := games[rand.Intn(len(games))]
 			match, err := client.Matches.CreateOne(
-				db.Matches.Player1.Link(db.User.ID.Equals(player1ID)),
-				db.Matches.Player2.Link(db.User.ID.Equals(player2ID)),
+				db.Matches.Player1.Link(db.User.ID.Equals(player1.ID)),
+				db.Matches.Player2.Link(db.User.ID.Equals(player2.ID)),
 				db.Matches.Game.Link(db.Games.ID.Equals(randGame.ID)),
 				db.Matches.Time.Set(db.DateTime(time.Now().Add(5*time.Minute))),
 			).Exec(context.Background())
 			if err != nil {
+				log.Println("Error creating match:", err)
 				websocket.Message.Send(ws, `{"error": "Error creating match"}`)
 				return
 			}
-			isDone <- match
 			websocket.JSON.Send(ws, match)
-		case MMQueue <- player1ID:
+			isDone <- match
+		case MMQueue <- *player1:
+			websocket.JSON.Send(ws, `{"msg": "Waiting for player 2"}`)
 			match := <-isDone
+			log.Println("Match created:", match)
 			websocket.JSON.Send(ws, match)
 		}
 
 	}).ServeHTTP(c.Response(), c.Request())
 	return nil
+}
+
+func game() {
+
 }
 
 type User struct {
@@ -82,5 +96,6 @@ func server() {
 	})
 
 	e.GET("/ws/match-making", matchMaking)
+
 	e.Logger.Fatal(e.Start(":8080"))
 }
