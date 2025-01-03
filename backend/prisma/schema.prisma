@@ -16,10 +16,11 @@ model User {
 }
 
 model Games {
-  id    Int    @id @default(sequence())
-  name  String @unique
-  time  Int //duration of the game in minutes
-  rules String
+  id      Int       @id @default(sequence())
+  name    String    @unique
+  time    Int //duration of the game in minutes
+  rules   String
+  Matches Matches[]
 }
 
 model Matches {
@@ -28,6 +29,8 @@ model Matches {
   Player_1    User     @relation("player1", fields: [player_1_id], references: [id])
   player_2_id String
   Player_2    User     @relation("player2", fields: [player_2_id], references: [id])
+  game_id     Int
+  Game        Games    @relation(fields: [game_id], references: [id])
   time        DateTime
   winner      String?
   is_active   Boolean  @default(true)

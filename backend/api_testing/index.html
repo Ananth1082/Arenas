@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebSocket Form</title>
+  </head>
+  <body>
+    <form id="userForm">
+      <label for="userId">UserID:</label>
+      <input type="text" id="userId" name="userId" required />
+      <input type="submit" value="Send" />
+    </form>
+    <script>
+      // Initialize WebSocket connection
+      const ws = new WebSocket("http://localhost:8080/ws"); // Replace with your server URL
+
+      // Listen for messages from the server
+      ws.onmessage = (e) => {
+        console.log("Message from server:", e.data);
+      };
+
+      // Handle form submission
+      document.getElementById("userForm").onsubmit = (e) => {
+        e.preventDefault(); // Prevent form from reloading the page
+        const userId = document.getElementById("userId").value;
+
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ userId })); // Send userID to the server
+          console.log("UserID sent:", userId);
+        } else {
+          console.error("WebSocket is not open.");
+        }
+      };
+    </script>
+  </body>
+</html>
