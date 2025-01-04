@@ -18,7 +18,7 @@ model User {
 model Games {
   id      Int       @id @default(sequence())
   name    String    @unique
-  time    Int //duration of the game in minutes
+  time    Int //duration in seconds 
   rules   String
   Matches Matches[]
 }
