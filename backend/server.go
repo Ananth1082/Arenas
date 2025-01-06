@@ -1,8 +1,8 @@
-// TODO: Implement websocket handler for the type testing game
 package main
 
 import (
 	"context"
+	"io"
 	"log"
 	"net/http"
 	"sync"
@@ -13,6 +13,8 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"golang.org/x/net/websocket"
 )
+
+const BUFF_TIME = 4 * time.Second
 
 var MMQueue = make(chan UserInfo, 1)
 var isDone = make(chan *db.MatchesModel)
@@ -63,24 +65,32 @@ type GameState struct {
 var matchMap ConnMap
 var matchSync sync.RWMutex
 
-func wsReturnMsg(ws *websocket.Conn) string {
-	msg := ""
-	if err := websocket.Message.Receive(ws, &msg); err != nil {
-		log.Println("Error sending message:", err)
-	}
-	return msg
-}
-
-func tugOfWar(c echo.Context) error {
+func handleGameConnection(c echo.Context) error {
 	websocket.Handler(func(ws *websocket.Conn) {
-		defer ws.Close()
-		// Greet the client
-		if err := websocket.Message.Send(ws, "Hello, Client!"); err != nil {
+		done := make(chan struct{})
+		defer func() {
+			close(done)
+			goodbyeMessage := Message{
+				Type: 0,
+				Data: "Goodbye",
+			}
+			if err := websocket.JSON.Send(ws, goodbyeMessage); err != nil {
+				log.Println("Error sending goodbye message:", err)
+			} else {
+				log.Println("Goodbye message sent successfully")
+			}
+			log.Println("Closing connection")
+			ws.Close()
+		}()
+
+		if err := websocket.JSON.Send(ws, Message{
+			Type: 0,
+			Data: "Hello, welcome to the tug of war game",
+		}); err != nil {
 			c.Logger().Error("Error sending greeting:", err)
 			return
 		}
 
-		// Recieve match id
 		userData := new(struct {
 			UserID  string `json:"userId"`
 			MatchID string `json:"matchId"`
@@ -94,9 +104,13 @@ func tugOfWar(c echo.Context) error {
 		//identify user number
 		i := 0
 		if !ok {
-			websocket.Message.Send(ws, `{"error": "Match has not started or has expired"}`)
+			websocket.Message.Send(ws, Message{
+				Type: 2,
+				Data: "Match not found",
+			})
 			return
 		}
+
 		if match.Players[0].ID == userData.UserID {
 			match.Players[0].Conn = ws
 			i = 0
@@ -104,30 +118,68 @@ func tugOfWar(c echo.Context) error {
 			match.Players[1].Conn = ws
 			i = 1
 		}
-		match.gameState.issueTime = time.Now()
-		// give 10 seconds buffer time
-		match.gameState.endTime = time.Now().Add(time.Duration(match.gameState.duration+10) * time.Second)
-		websocket.JSON.Send(ws, map[string]any{
-			"issueTime": match.gameState.issueTime,
-			"startTime": match.gameState.issueTime.Add(10 * time.Second),
-			"endTime":   match.gameState.endTime,
-		})
-		//sleep untill the game starts
-		time.Sleep(time.Now().Sub(match.gameState.issueTime.Add(10 * time.Second)))
+		ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 
-		//send game state to both players
 		for {
-			select {
-			case msg := <-match.Players[1-i].msgQueue:
-				//send game state
-				websocket.Message.Send(match.Players[i].Conn, msg)
-			case match.Players[i].msgQueue <- wsReturnMsg(ws):
-			case <-time.After(match.gameState.endTime.Sub(time.Now())):
-				//game over
-				websocket.Message.Send(match.Players[i].Conn, "game over")
-				return
+			var msg Message
+			if err := websocket.JSON.Receive(ws, &msg); err != nil {
+				break
 			}
 		}
+
+		ws.SetReadDeadline(match.gameState.issueTime.Add(BUFF_TIME))
+		time.Sleep(match.gameState.issueTime.Add(BUFF_TIME).Sub(time.Now()))
+		ws.SetReadDeadline(time.Time{}) //reset read deadline
+
+		endDuration := time.Until(match.gameState.endTime)
+		log.Println("End duration:", endDuration)
+		timer := time.NewTimer(endDuration)
+
+		//message dequeue
+		go func() {
+			for {
+				select {
+				case msg := <-match.Players[1-i].msgQueue:
+					if msg != "" {
+						log.Println("Received message from player", 1-i, ":", msg)
+						//send game state
+						err := websocket.JSON.Send(match.Players[i].Conn, Message{
+							Type: 3,
+							Data: msg,
+						})
+						if err == io.EOF {
+							log.Println("Exiting message dequeue")
+							return
+						}
+					}
+				case <-done:
+					log.Println("DONE")
+					return
+				}
+			}
+
+		}()
+
+		//message enqueue
+		go func() {
+			for {
+				msg := ""
+				if err := websocket.Message.Receive(ws, &msg); err != nil {
+					log.Println("Error sending message:", err)
+					if err == io.EOF {
+						return
+					}
+				}
+				select {
+				case <-done:
+					return
+				case match.Players[i].msgQueue <- msg:
+					log.Println("Sent message to player", i)
+				}
+			}
+		}()
+		<-timer.C
+		timer.Stop()
 	}).ServeHTTP(c.Response(), c.Request())
 	return nil
 }
@@ -138,7 +190,7 @@ type User struct {
 
 func server() {
 	e := echo.New()
-	e.Use(middleware.Logger())
+	// e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 
 	e.POST("/user", func(c echo.Context) error {
@@ -151,7 +203,7 @@ func server() {
 		}
 		return c.JSON(http.StatusOK, echo.Map{"msg": "user created", "user": newUser})
 	})
-	e.GET("/ws/tug-of-war", tugOfWar)
+	e.GET("/ws/tug-of-war", handleGameConnection)
 	e.GET("/ws/match-making", matchMaking)
 
 	e.Logger.Fatal(e.Start(":8080"))
