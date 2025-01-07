@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -23,16 +25,16 @@ type ConnMap struct {
 	sync.Map
 }
 
-func (c *ConnMap) Store(key string, value Match) {
+func (c *ConnMap) Store(key string, value *Match) {
 	c.Map.Store(key, value)
 }
 
-func (c *ConnMap) Load(key string) (Match, bool) {
+func (c *ConnMap) Load(key string) (*Match, bool) {
 	val, ok := c.Map.Load(key)
 	if !ok {
-		return Match{}, false
+		return nil, false
 	}
-	return val.(Match), true
+	return val.(*Match), true
 }
 
 type UserInfo struct {
@@ -52,11 +54,11 @@ type Player struct {
 	msgQueue chan string
 }
 type Match struct {
-	Players   [2]Player
-	gameState GameState //server held game state
+	Players [2]Player
+	game    Game //server held game state
 }
 
-type GameState struct {
+type Game struct {
 	issueTime time.Time
 	duration  int
 	endTime   time.Time
@@ -65,20 +67,15 @@ type GameState struct {
 var matchMap ConnMap
 var matchSync sync.RWMutex
 
+func tugOfWar() {
+
+}
+
 func handleGameConnection(c echo.Context) error {
 	websocket.Handler(func(ws *websocket.Conn) {
 		done := make(chan struct{})
 		defer func() {
-			close(done)
-			goodbyeMessage := Message{
-				Type: 0,
-				Data: "Goodbye",
-			}
-			if err := websocket.JSON.Send(ws, goodbyeMessage); err != nil {
-				log.Println("Error sending goodbye message:", err)
-			} else {
-				log.Println("Goodbye message sent successfully")
-			}
+
 			log.Println("Closing connection")
 			ws.Close()
 		}()
@@ -118,6 +115,7 @@ func handleGameConnection(c echo.Context) error {
 			match.Players[1].Conn = ws
 			i = 1
 		}
+
 		ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 
 		for {
@@ -126,23 +124,24 @@ func handleGameConnection(c echo.Context) error {
 				break
 			}
 		}
-
-		ws.SetReadDeadline(match.gameState.issueTime.Add(BUFF_TIME))
-		time.Sleep(match.gameState.issueTime.Add(BUFF_TIME).Sub(time.Now()))
+		count := 0
+		ws.SetReadDeadline(match.game.issueTime.Add(BUFF_TIME))
+		time.Sleep(match.game.issueTime.Add(BUFF_TIME).Sub(time.Now()))
 		ws.SetReadDeadline(time.Time{}) //reset read deadline
 
-		endDuration := time.Until(match.gameState.endTime)
+		endDuration := time.Until(match.game.endTime)
 		log.Println("End duration:", endDuration)
 		timer := time.NewTimer(endDuration)
 
 		//message dequeue
+		// sends the opps game state
 		go func() {
 			for {
 				select {
 				case msg := <-match.Players[1-i].msgQueue:
 					if msg != "" {
 						log.Println("Received message from player", 1-i, ":", msg)
-						//send game state
+
 						err := websocket.JSON.Send(match.Players[i].Conn, Message{
 							Type: 3,
 							Data: msg,
@@ -161,6 +160,7 @@ func handleGameConnection(c echo.Context) error {
 		}()
 
 		//message enqueue
+		// controlls the user game state
 		go func() {
 			for {
 				msg := ""
@@ -170,16 +170,36 @@ func handleGameConnection(c echo.Context) error {
 						return
 					}
 				}
+				if msg == "PING" {
+					count++
+				}
 				select {
 				case <-done:
 					return
-				case match.Players[i].msgQueue <- msg:
+				case match.Players[i].msgQueue <- fmt.Sprint(count):
 					log.Println("Sent message to player", i)
 				}
 			}
 		}()
+
 		<-timer.C
-		timer.Stop()
+		close(done)
+		match.Players[1-i].msgQueue <- fmt.Sprint(count)
+		oppCount, _ := strconv.Atoi(<-match.Players[1-i].msgQueue)
+		goodbyeMessage := Message{
+			Type: 0,
+			Data: "Draw",
+		}
+		if count > oppCount {
+			goodbyeMessage.Data = "You Win"
+		} else if count < oppCount {
+			goodbyeMessage.Data = "You Lose"
+		}
+		if err := websocket.JSON.Send(ws, goodbyeMessage); err != nil {
+			log.Println("Error sending goodbye message:", err)
+		} else {
+			log.Println("Goodbye message sent successfully")
+		}
 	}).ServeHTTP(c.Response(), c.Request())
 	return nil
 }

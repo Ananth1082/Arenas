@@ -66,20 +66,20 @@ func matchMaking(c echo.Context) error {
 				})
 				return
 			}
-			matchMap.Store(match.ID, Match{
+			matchMap.Store(match.ID, &Match{
 				Players: [2]Player{
 					{
 						UserInfo: *player1,
 						Conn:     nil,
-						msgQueue: make(chan string, 5),
+						msgQueue: make(chan string, 10),
 					},
 					{
 						UserInfo: player2,
 						Conn:     nil,
-						msgQueue: make(chan string, 5),
+						msgQueue: make(chan string, 10),
 					},
 				},
-				gameState: GameState{
+				game: Game{
 					issueTime: time.Now(),
 					duration:  5,
 					endTime:   time.Now().Add(BUFF_TIME).Add(time.Duration(5) * time.Second),
